@@ -1,0 +1,288 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <float.h>
+#include <math.h>
+
+#define WIDTH 10
+#define HEIGHT 20
+
+// 评估参数结构体
+typedef struct {
+	double landing_weight;
+	double rows_eliminated_weight;
+	double row_trans_weight;
+	double col_trans_weight;
+	double holes_weight;
+	double wells_weight;
+} EvalParams;
+
+// 默认评估参数
+const EvalParams default_params = {
+	-0.5,   // landing_weight
+	1.8,    // rows_eliminated_weight
+	-3.2,   // row_trans_weight
+	-9.3,   // col_trans_weight
+	-7.8,   // holes_weight
+	-3.38   // wells_weight
+};
+
+// 前向声明函数原型
+int typemap(char ch);
+int check_collision(int x, int y, int rot, int type, int board[HEIGHT][WIDTH]);
+void put_piece(int x, int y, int rot, int type, int board[HEIGHT][WIDTH]);
+int clear_lines(int board[HEIGHT][WIDTH]);
+double evaluate(int temp[HEIGHT][WIDTH], int landing_y);
+
+// 方块定义
+int I0[4][4] = {{0,0,0,0},{0,0,0,0},{0,0,0,0},{1,1,1,1}};
+int I1[4][4] = {{1,0,0,0},{1,0,0,0},{1,0,0,0},{1,0,0,0}};
+int O0[4][4] = {{0,0,0,0},{0,0,0,0},{1,1,0,0},{1,1,0,0}};
+int T0[4][4] = {{0,0,0,0},{0,0,0,0},{0,1,0,0},{1,1,1,0}};
+int T1[4][4] = {{0,0,0,0},{1,0,0,0},{1,1,0,0},{1,0,0,0}};
+int S0[4][4] = {{0,0,0,0},{0,0,0,0},{0,1,1,0},{1,1,0,0}};
+int S1[4][4] = {{0,0,0,0},{1,0,0,0},{1,1,0,0},{0,1,0,0}};
+int Z0[4][4] = {{0,0,0,0},{0,0,0,0},{1,1,0,0},{0,1,1,0}};
+int Z1[4][4] = {{0,0,0,0},{0,1,0,0},{1,1,0,0},{1,0,0,0}};
+int J0[4][4] = {{0,0,0,0},{0,0,0,0},{1,0,0,0},{1,1,1,0}};
+int J1[4][4] = {{0,0,0,0},{1,1,0,0},{1,0,0,0},{1,0,0,0}};
+int L0[4][4] = {{0,0,0,0},{0,0,0,0},{0,0,1,0},{1,1,1,0}};
+int L1[4][4] = {{0,0,0,0},{1,0,0,0},{1,0,0,0},{1,1,0,0}};
+
+int* blocks[7][4] = {
+	{(int*)I0, (int*)I1, (int*)I0, (int*)I1},
+	{(int*)O0, (int*)O0, (int*)O0, (int*)O0},
+	{(int*)T0, (int*)T1, (int*)T0, (int*)T1},
+	{(int*)S0, (int*)S1, (int*)S0, (int*)S1},
+	{(int*)Z0, (int*)Z1, (int*)Z0, (int*)Z1},
+	{(int*)J0, (int*)J1, (int*)J0, (int*)J1},
+	{(int*)L0, (int*)L1, (int*)L0, (int*)L1}
+};
+
+// 游戏状态
+int mat[HEIGHT][WIDTH];
+int _score = 0;
+
+// 类型映射函数
+int typemap(char ch) {
+	switch(ch) {
+		case 'I': return 0;
+		case 'O': return 1;
+		case 'T': return 2;
+		case 'S': return 3;
+		case 'Z': return 4;
+		case 'J': return 5;
+		case 'L': return 6;
+		default:  return 0;
+	}
+}
+
+// 碰撞检测函数
+int check_collision(int x, int y, int rot, int type, int board[HEIGHT][WIDTH]) {
+	int (*shape)[4] = (int (*)[4])blocks[type][rot];
+	for(int i=0; i<4; i++) {
+		for(int j=0; j<4; j++) {
+			if(shape[i][j]) {
+				int wx = x + j;
+				int wy = y + i - 3; // 底部对齐
+				if(wx < 0 || wx >= WIDTH) return 1;
+				if(wy >= HEIGHT) return 1;
+				if(wy >= 0 && board[wy][wx]) return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+// 放置方块函数
+void put_piece(int x, int y, int rot, int type, int board[HEIGHT][WIDTH]) {
+	int (*shape)[4] = (int (*)[4])blocks[type][rot];
+	for(int i=0; i<4; i++) {
+		for(int j=0; j<4; j++) {
+			if(shape[i][j]) {
+				int wx = x + j;
+				int wy = y + i - 3;
+				if(wx >=0 && wx < WIDTH && wy >=0 && wy < HEIGHT)
+					board[wy][wx] = 1;
+			}
+		}
+	}
+}
+
+// 行消除函数
+int clear_lines(int board[HEIGHT][WIDTH]) {
+	int lines_cleared = 0;
+	int full_rows[4] = {0};
+	
+	// 检测满行
+	for(int y=HEIGHT-1; y>=0; y--) {
+		int full = 1;
+		for(int x=0; x<WIDTH; x++) {
+			if(!board[y][x]) {
+				full = 0;
+				break;
+			}
+		}
+		if(full) full_rows[lines_cleared++] = y;
+		if(lines_cleared >= 4) break;
+	}
+	
+	// 执行消除
+	if(lines_cleared > 0) {
+		int write_idx = HEIGHT-1;
+		for(int y=HEIGHT-1; y>=0; y--) {
+			int keep = 1;
+			for(int i=0; i<lines_cleared; i++) {
+				if(y == full_rows[i]) {
+					keep = 0;
+					break;
+				}
+			}
+			if(keep) {
+				memcpy(board[write_idx], board[y], sizeof(board[y]));
+				write_idx--;
+			}
+		}
+		// 填充顶部空行
+		while(write_idx >= 0) {
+			memset(board[write_idx--], 0, sizeof(board[0]));
+		}
+	}
+	return lines_cleared;
+}
+
+// 综合评估函数
+double evaluate(int temp[HEIGHT][WIDTH], int landing_y) {
+	EvalParams p = default_params;
+	double score = 0;
+	
+	// 计算着陆高度（越低越好）
+	score += p.landing_weight * (HEIGHT - landing_y);
+	
+	// 行消除得分
+	int lines = clear_lines(temp);
+	const int score_table[] = {0, 100, 300, 500, 800};
+	score += p.rows_eliminated_weight * score_table[lines];
+	
+	// 行转换计算
+	int row_trans = 0;
+	for(int y=0; y<HEIGHT; y++) {
+		int prev = 1;
+		for(int x=0; x<WIDTH; x++) {
+			if(temp[y][x] != prev) row_trans++;
+			prev = temp[y][x];
+		}
+		if(!prev) row_trans++;
+	}
+	score += p.row_trans_weight * row_trans;
+	
+	// 列转换计算
+	int col_trans = 0;
+	for(int x=0; x<WIDTH; x++) {
+		int prev = 1;
+		for(int y=0; y<HEIGHT; y++) {
+			if(temp[y][x] != prev) col_trans++;
+			prev = temp[y][x];
+		}
+		if(!prev) col_trans++;
+	}
+	score += p.col_trans_weight * col_trans;
+	
+	// 空洞计算
+	int holes = 0;
+	for(int x=0; x<WIDTH; x++) {
+		int roof = 0;
+		for(int y=0; y<HEIGHT; y++) {
+			if(temp[y][x]) roof = 1;
+			else if(roof) holes++;
+		}
+	}
+	score += p.holes_weight * holes;
+	
+	// 井深计算
+	int wells = 0;
+	for(int x=0; x<WIDTH; x++) {
+		for(int y=0; y<HEIGHT; y++) {
+			if(temp[y][x]) continue;
+			int left = (x>0) ? temp[y][x-1] : 1;
+			int right = (x<WIDTH-1) ? temp[y][x+1] : 1;
+			if(left && right) {
+				int depth = 0;
+				for(int dy=y; dy<HEIGHT && !temp[dy][x]; dy++) depth++;
+				wells += depth * (depth+1) / 2;
+			}
+		}
+	}
+	score += p.wells_weight * wells;
+	
+	return score;
+}
+
+// AI决策函数
+void choose(char c1, char c2) {
+	int best_rot = 0, best_x = 0;
+	double max_score = -DBL_MAX;
+	int type = typemap(c1);
+	
+	for(int rot=0; rot<4; rot++) {
+		if((type==0 || type==3 || type==4) && rot>1) break;
+		
+		for(int x=-2; x<WIDTH+2; x++) {
+			if(check_collision(x, 3, rot, type, mat)) continue;
+			
+			// 模拟下落
+			int y = 3;
+			while(y < HEIGHT && !check_collision(x, y+1, rot, type, mat)) y++;
+			
+			// 创建临时棋盘
+			int temp[HEIGHT][WIDTH];
+			memcpy(temp, mat, sizeof(mat));
+			put_piece(x, y, rot, type, temp);
+			
+			// 评估得分
+			double score = evaluate(temp, y);
+			
+			if(score > max_score) {
+				max_score = score;
+				best_rot = rot;
+				best_x = x;
+			}
+		}
+	}
+	
+	// 执行最佳移动
+	int y = 3;
+	while(y < HEIGHT && !check_collision(best_x, y+1, best_rot, type, mat)) y++;
+	put_piece(best_x, y, best_rot, type, mat);
+	
+	// 更新得分
+	int lines = clear_lines(mat);
+	const int score_table[] = {0, 100, 300, 500, 800};
+	if(lines >=1 && lines <=4) _score += score_table[lines];
+	
+	printf("%d %d\n", best_rot, best_x);
+	fflush(stdout);
+}
+
+// 主函数
+int main() {
+	memset(mat, 0, sizeof(mat));
+	
+	char now, nxt;
+	if(scanf("%c%c",&now,&nxt)!=2) return 1;
+	while(1) {
+		choose(now, nxt);
+		printf("%d\n", _score);
+        fflush(stdout);
+		now = nxt;
+		if(scanf(" %c",&nxt)!=1) break;
+		if(nxt == 'E') break;
+		if(nxt == 'X') { choose(now, now);
+			printf("%d\n", _score);
+                        fflush(stdout);
+			break; }
+	}
+	
+
+	return 0;
+}
